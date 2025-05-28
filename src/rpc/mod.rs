@@ -1,5 +1,9 @@
+use errors::DecodeError;
+use log::info;
 use memchr::memmem::find;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::Deserialize;
+use serde::{Serialize, de::DeserializeOwned};
+use std::io::{Error as IoError, ErrorKind};
 use std::{
     fmt,
     str::{self, from_utf8},
@@ -7,41 +11,18 @@ use std::{
 
 #[cfg(test)]
 mod tests;
+pub mod message_codec;
+mod errors;
 
-#[derive(Debug)]
-pub enum DecodeError {
-    MissingDelimiter,
-    HeaderNotUtf8,
-    MissingPrefix { found: String },
-    InvalidLengthField { field: String },
-    IncompleteBody { expected: usize, found: usize },
-}
+const PREFIX: &str = "Content-Length: ";
+const DELIMITER: &[u8] = b"\r\n\r\n";
 
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DecodeError::MissingDelimiter => write!(
-                f,
-                "Could not find the message separator \"\\r\\n\\r\\n\" — is the header terminated properly?"
-            ),
-            DecodeError::HeaderNotUtf8 => write!(f, "Header bytes are not valid UTF-8"),
-            DecodeError::MissingPrefix { found } => write!(
-                f,
-                "Expected header to start with \"Content-Length: \", but found: `{}`",
-                found
-            ),
-            DecodeError::InvalidLengthField { field } => write!(
-                f,
-                "Failed to parse the Content-Length value `{}` as a positive integer",
-                field
-            ),
-            DecodeError::IncompleteBody { expected, found } => write!(
-                f,
-                "Declared Content-Length is {} but only {} bytes of body data were provided",
-                expected, found
-            ),
-        }
-    }
+#[derive(Deserialize, Debug)]
+pub struct Request<P> {
+    jsonrpc: String,
+    id: u32,
+    method: String,
+    params: P
 }
 
 pub fn encode_message<T: Serialize>(msg_obj: &T) -> String {
@@ -51,15 +32,14 @@ pub fn encode_message<T: Serialize>(msg_obj: &T) -> String {
     format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload)
 }
 
-pub fn decode_message<T: DeserializeOwned>(buf: &[u8]) -> Result<T, DecodeError> {
+pub fn decode_message<T: DeserializeOwned>(buf: &[u8]) -> Result<Request<T>, DecodeError> {
     // find the "\r\n\r\n" boundary
-    let header_end = find(buf, b"\r\n\r\n").ok_or(DecodeError::MissingDelimiter)?;
+    let header_end = find(buf, DELIMITER).ok_or(DecodeError::MissingDelimiter)?;
 
     // slice out header and parse as UTF-8
     let header = from_utf8(&buf[..header_end]).map_err(|_| DecodeError::HeaderNotUtf8)?;
 
     // check the prefix
-    const PREFIX: &str = "Content-Length: ";
     if !header.starts_with(PREFIX) {
         return Err(DecodeError::MissingPrefix {
             found: header.to_string(),
@@ -84,8 +64,49 @@ pub fn decode_message<T: DeserializeOwned>(buf: &[u8]) -> Result<T, DecodeError>
         });
     }
 
-    let parsed_content: Result<T, serde_json::Error> =
-        serde_json::from_slice(&buf[body_start..body_start + content_length]);
-
-    Ok(parsed_content.unwrap())
+    serde_json::from_slice(&buf[body_start..body_start + content_length]).map_err(DecodeError::Json)
 }
+
+/// Try to split `data` into a complete message.
+///
+/// Returns:
+/// - `Ok(Some((advance, &data[..advance])))` when you have a full frame.
+/// - `Ok(None)` when you need more bytes.
+/// - `Err(_)` if the header is malformed.
+pub fn split_frame(data: &[u8]) -> Result<Option<(usize, &[u8])>, IoError> {
+    // find the "\r\n\r\n" boundary
+    let header_end = match find(data, DELIMITER) {
+        Some(pos) => pos,
+        None => return Ok(None),
+    };
+
+    // parse header as UTF-8
+    let header = std::str::from_utf8(&data[..header_end])
+        .map_err(|_| IoError::new(ErrorKind::InvalidData, "Header not UTF-8"))?;
+
+    // must start with "Content-Length: "
+    let len_str = header
+        .strip_prefix(PREFIX)
+        .ok_or_else(|| {
+            IoError::new(
+                ErrorKind::InvalidData,
+                "Missing \"Content-Length: \" prefix",
+            )
+        })?
+        .trim();
+
+    // parse the length field
+    let content_len: usize = len_str
+        .parse()
+        .map_err(|_| IoError::new(ErrorKind::InvalidData, "Invalid Content-Length"))?;
+
+    // do we have enough bytes?
+    let body_start = header_end + DELIMITER.len();
+    if data.len() < body_start + content_len {
+        return Ok(None);
+    }
+
+    let total = body_start + content_len;
+    Ok(Some((total, &data[..total])))
+}
+
