@@ -1,29 +1,20 @@
 use errors::DecodeError;
-use log::info;
 use memchr::memmem::find;
 use serde::Deserialize;
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{Error as IoError, ErrorKind};
-use std::{
-    fmt,
-    str::{self, from_utf8},
-};
+use std::
+    str::{self, from_utf8}
+;
 
 #[cfg(test)]
 mod tests;
 pub mod message_codec;
-mod errors;
+pub mod errors;
 
 const PREFIX: &str = "Content-Length: ";
 const DELIMITER: &[u8] = b"\r\n\r\n";
 
-#[derive(Deserialize, Debug)]
-pub struct Request<P> {
-    jsonrpc: String,
-    id: u32,
-    method: String,
-    params: P
-}
 
 pub fn encode_message<T: Serialize>(msg_obj: &T) -> String {
     let payload = serde_json::to_string(msg_obj)
@@ -32,7 +23,7 @@ pub fn encode_message<T: Serialize>(msg_obj: &T) -> String {
     format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload)
 }
 
-pub fn decode_message<T: DeserializeOwned>(buf: &[u8]) -> Result<Request<T>, DecodeError> {
+pub fn decode_message<T: DeserializeOwned>(buf: &[u8]) -> Result<T, DecodeError> {
     // find the "\r\n\r\n" boundary
     let header_end = find(buf, DELIMITER).ok_or(DecodeError::MissingDelimiter)?;
 
