@@ -10,7 +10,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
         TermLogger::new(
             LevelFilter::Info,
             Config::default(),
-            TerminalMode::Mixed,
+            TerminalMode::Stderr,
             ColorChoice::Auto,
         ),
         // file logger

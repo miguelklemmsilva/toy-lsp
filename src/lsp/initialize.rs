@@ -40,7 +40,7 @@ enum TextDocumentSyncKind {
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
-    text_document_sync_kind: Option<u16>,
+    text_document_sync: Option<u16>,
 }
 
 #[derive(Serialize, Debug)]
@@ -60,7 +60,7 @@ impl InitializeResponse {
             error: None,
             result: InitializeResult {
                 capabilities: ServerCapabilities {
-                    text_document_sync_kind: Some(1),
+                    text_document_sync: Some(1),
                 },
                 server_info: Some(ServerInfo {
                     name: String::from("toy-lsp"),

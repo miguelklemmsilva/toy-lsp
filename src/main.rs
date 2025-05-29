@@ -1,7 +1,7 @@
 use log::{info, warn};
 use logger::init_logging;
 use lsp::{
-    initialize::{InitializeParams, InitializeResponse, InitializeResult}, Request, Response
+    did_open::{self, DidOpenTextDocumentParams}, initialize::{InitializeParams, InitializeResponse, InitializeResult}, Incoming, Notification, Request, Response
 };
 use rpc::{decode_message, errors::DecodeError, message_codec::MessageCodec};
 use serde::Serialize;
@@ -24,10 +24,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while let Some(frame) = reader.next().await {
         let buf = frame?;
-        let decoded_result: Result<Request<Value>, DecodeError> = decode_message(buf.as_ref());
+        let decoded_result: Result<Incoming<Value>, DecodeError> = decode_message(buf.as_ref());
 
-        let decoded_message = match decoded_result {
-            Ok(decoded_message) => decoded_message,
+        match decoded_result {
+            Ok(decoded_message) => match decoded_message {
+                Incoming::Request(req) => handle_request(req, &mut writer).await,
+                Incoming::Notification(not) => handle_notification(not).await,
+            },
             Err(err) => {
                 warn!("Error decoding message: {err}");
                 // don't panic, just go to next message
@@ -35,13 +38,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        handle_message(decoded_message, &mut writer).await;
         writer.flush().await?;
     }
     Ok(())
 }
 
-async fn handle_message(request: Request<Value>, writer: &mut Stdout) {
+async fn handle_request(request: Request<Value>, writer: &mut Stdout) {
     info!("Received message with method: {}", request.method);
     match request.method.as_str() {
         "initialize" => {
@@ -52,11 +54,6 @@ async fn handle_message(request: Request<Value>, writer: &mut Stdout) {
                 })
                 .unwrap();
 
-            info!("Initialized message received");
-            info!(
-                "Information: name: {},\n other: {:?}",
-                message_params.client_info.name, message_params.client_info.version
-            );
             let encoded_message = rpc::encode_message(&InitializeResponse::new(request.id));
 
             info!("Encoded message: {encoded_message}");
@@ -65,6 +62,22 @@ async fn handle_message(request: Request<Value>, writer: &mut Stdout) {
                 .await
                 .map_err(|err| warn!("Failed to write to std io to initialize {err}"));
         }
-        _ => warn!("Message type not recognized!"),
+        unrecognized => warn!("Message type not recognized! Type: {}", unrecognized),
+    }
+}
+
+async fn handle_notification(notification: Notification<Value>) {
+    match notification.method.as_str() {
+        "textDocument/didOpen" => {
+            let notification_params = from_value::<DidOpenTextDocumentParams>(notification.params)
+                .map_err(|err| {
+                    warn!("Failed to parse did open notificaiton params {err}");
+                    return;
+                })
+                .unwrap();
+
+                info!("Received notifcation params {:?}", notification_params)
+        }
+        unrecognized => warn!("Message type not recognized! Type: {}", unrecognized),
     }
 }

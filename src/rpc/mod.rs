@@ -1,4 +1,5 @@
 use errors::DecodeError;
+use log::info;
 use memchr::memmem::find;
 use serde::Deserialize;
 use serde::{Serialize, de::DeserializeOwned};
@@ -6,6 +7,8 @@ use std::io::{Error as IoError, ErrorKind};
 use std::
     str::{self, from_utf8}
 ;
+
+use crate::lsp::Incoming;
 
 #[cfg(test)]
 mod tests;
@@ -23,7 +26,7 @@ pub fn encode_message<T: Serialize>(msg_obj: &T) -> String {
     format!("Content-Length: {}\r\n\r\n{}", payload.len(), payload)
 }
 
-pub fn decode_message<T: DeserializeOwned>(buf: &[u8]) -> Result<T, DecodeError> {
+pub fn decode_message<T: DeserializeOwned>(buf: &[u8]) -> Result<Incoming<T>, DecodeError> {
     // find the "\r\n\r\n" boundary
     let header_end = find(buf, DELIMITER).ok_or(DecodeError::MissingDelimiter)?;
 
